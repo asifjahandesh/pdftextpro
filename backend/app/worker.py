@@ -141,8 +141,7 @@ def _finalize_document(db, doc: Document, job: ProcessingJob) -> None:
     db.commit()
 
 
-@celery.task(bind=True)
-def process_document(self, doc_id: str) -> None:
+def run_process_document(doc_id: str, task_id: str | None = None) -> None:
     db = SessionLocal()
     job = None
     try:
@@ -154,7 +153,7 @@ def process_document(self, doc_id: str) -> None:
         batch = int(os.getenv("BATCH_SIZE", "20"))
         job = ProcessingJob(
             document_id=doc.id,
-            celery_task_id=self.request.id,
+            celery_task_id=task_id,
             status="processing",
             checkpoint_page=doc.completed_pages,
             batch_size=batch,
@@ -231,7 +230,16 @@ def process_document(self, doc_id: str) -> None:
 
 
 @celery.task(bind=True)
+def process_document(self, doc_id: str) -> None:
+    run_process_document(doc_id, task_id=self.request.id)
+
+
+@celery.task(bind=True)
 def retry_failed_pages(self, doc_id: str) -> None:
+    run_retry_failed_pages(doc_id, task_id=self.request.id)
+
+
+def run_retry_failed_pages(doc_id: str, task_id: str | None = None) -> None:
     """Re-process only pages with status == 'failed' for a document."""
     db = SessionLocal()
     job = None
@@ -256,7 +264,7 @@ def retry_failed_pages(self, doc_id: str) -> None:
         batch = int(os.getenv("BATCH_SIZE", "20"))
         job = ProcessingJob(
             document_id=doc.id,
-            celery_task_id=self.request.id,
+            celery_task_id=task_id,
             status="processing",
             checkpoint_page=doc.completed_pages,
             batch_size=batch,
@@ -303,3 +311,13 @@ def retry_failed_pages(self, doc_id: str) -> None:
         raise
     finally:
         db.close()
+
+
+@celery.task(bind=True)
+def process_document(self, doc_id: str) -> None:
+    run_process_document(doc_id, task_id=self.request.id)
+
+
+@celery.task(bind=True)
+def retry_failed_pages(self, doc_id: str) -> None:
+    run_retry_failed_pages(doc_id, task_id=self.request.id)

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import fitz
 import redis
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel
@@ -25,7 +25,14 @@ from .auth import (
 from .db import get_db
 from .models import Document, DocumentPage, User
 from .storage import delete_stored_file, upload_to_r2_if_enabled
-from .worker import process_document, retry_failed_pages
+from .worker import (
+    process_document,
+    retry_failed_pages,
+    run_process_document,
+    run_retry_failed_pages,
+)
+
+PROCESSING_MODE = os.getenv("PROCESSING_MODE", "celery").strip().lower()
 
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "./data/uploads")).resolve()
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -168,6 +175,7 @@ def list_documents(
 
 @app.post("/documents")
 async def upload_pdf(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     language: str = "auto",
     current_user: User = Depends(get_current_user),
@@ -236,10 +244,10 @@ async def upload_pdf(
         )
         db.add(doc)
         db.commit()
-        try:
+        if PROCESSING_MODE == "inline":
+            background_tasks.add_task(run_process_document, str(doc_id), "inline")
+        else:
             process_document.delay(str(doc_id))
-        except Exception:
-            pass
         return {"id": str(doc_id), "status": "queued"}
     except HTTPException:
         raise
@@ -324,16 +332,22 @@ def download_text(
 @app.post("/documents/{doc_id}/resume")
 def resume_document(
     doc_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     doc = get_owned_document(doc_id, current_user, db)
+    if doc.status == "processing":
+        raise HTTPException(409, "Document is already processing.")
     doc.status = "queued"
     db.commit()
-    try:
-        process_document.delay(str(doc.id))
-    except Exception as e:
-        raise HTTPException(503, f"Worker queue unavailable: {e}")
+    if PROCESSING_MODE == "inline":
+        background_tasks.add_task(run_process_document, str(doc.id), "inline")
+    else:
+        try:
+            process_document.delay(str(doc.id))
+        except Exception as e:
+            raise HTTPException(503, f"Worker queue unavailable: {e}")
     return {"id": str(doc.id), "status": "queued"}
 
 
@@ -354,12 +368,18 @@ def delete_document(
 @app.post("/documents/{doc_id}/retry-failed")
 def retry_failed(
     doc_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     doc = get_owned_document(doc_id, current_user, db)
-    try:
-        retry_failed_pages.delay(str(doc.id))
-    except Exception as e:
-        raise HTTPException(503, f"Worker queue unavailable: {e}")
+    if doc.status == "processing":
+        raise HTTPException(409, "Document is already processing.")
+    if PROCESSING_MODE == "inline":
+        background_tasks.add_task(run_retry_failed_pages, str(doc.id), "inline")
+    else:
+        try:
+            retry_failed_pages.delay(str(doc.id))
+        except Exception as e:
+            raise HTTPException(503, f"Worker queue unavailable: {e}")
     return {"id": str(doc.id), "status": "retrying_failed_pages"}
