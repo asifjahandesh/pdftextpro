@@ -1,0 +1,10 @@
+.env
+backups/
+data/
+backend/.venv/
+backend/__pycache__/
+backend/**/__pycache__/
+frontend/node_modules/
+frontend/.next/
+frontend/test-results/
+frontend/playwright-report/

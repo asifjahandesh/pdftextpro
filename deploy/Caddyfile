@@ -1,0 +1,24 @@
+# Production HTTPS reverse-proxy configuration for PDFText Pro (Caddy)
+# Replace example.com with your domain before deploying.
+
+example.com {
+    encode gzip zstd
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+
+    @api {
+        path /health /auth/* /documents /documents/*
+    }
+    handle @api {
+        reverse_proxy 127.0.0.1:8000
+    }
+
+    handle {
+        reverse_proxy 127.0.0.1:3000
+    }
+}
